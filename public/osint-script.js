@@ -1,617 +1,330 @@
 // Firebase Imports
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken, setPersistence, browserSessionPersistence } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+import { getAuth, signInAnonymously, signInWithCustomToken, setPersistence, browserSessionPersistence, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // setLogLevel('debug'); // Aktifkan ini jika Anda ingin melihat log debug Firebase
-
-        // Inisialisasi Firebase Global Variables (Required for Canvas Environment)
-        // Mengambil Environment Variable dari Netlify (via globalThis / window)
-        const firebaseConfig = (() => {
-            try {
-                // Menggunakan variabel global yang disediakan oleh Canvas
-                const env = window.FIREBASE_CONFIG_JSON || globalThis.FIREBASE_CONFIG_JSON;
-                const config = JSON.parse(env);
-                
-                // Jika config tidak valid, gunakan konfigurasi dummy/default
-                if (!config || !config.apiKey) {
-                    console.warn("[$ WARN] Menggunakan konfigurasi Firebase dummy/default.");
-                    return { apiKey: "", authDomain: "", projectId: "dummy-id", storageBucket: "", messagingSenderId: "", appId: "" };
-                }
-                return config;
-            } catch (e) {
-                console.error("Gagal parsing FIREBASE_CONFIG_JSON:", e);
-                return {};
-            }
-        })();
+// Mengambil Environment Variable dari Next.js (via globalThis / window)
+const firebaseConfig = (() => {
+    try {
+        const env = window.FIREBASE_CONFIG_JSON || globalThis.FIREBASE_CONFIG_JSON;
+        return JSON.parse(env);
+    } catch (e) {
+        console.error("[$ ERROR] Gagal parsing FIREBASE_CONFIG_JSON:", e);
+        return {};
+    }
+})();
 
 
-        const appId = window.APP_ID || globalThis.APP_ID || 'osint-v7';
-        // const initialAuthToken = window.INITIAL_AUTH_TOKEN || globalThis.INITIAL_AUTH_TOKEN || null; // Tidak digunakan lagi, diakses dari global scope
+const appId = window.APP_ID || globalThis.APP_ID || 'osint-v7';
 
-        // --- Global State ---
-        let db;
-        let auth;
-        let userId = 'USER_ID_BELUM_SIAP';
-        let isPremium = false;
-        let unsubscribePremiumStatus = () => { };
+// Token ini akan diisi oleh runtime Canvas/Next.js jika tersedia
+const initialAuthToken = window.INITIAL_AUTH_TOKEN || globalThis.INITIAL_AUTH_TOKEN || null;
 
-        // JANGAN LUPA GANTI INI DENGAN USER ID ANDA SENDIRI! (Ditemukan di header saat aplikasi dimuat)
-        const ADMIN_USER_ID = "0449C1CF-C4C2-4011-BFE0-3532C0FFDF48"; // Sesuai dengan format UUID
+// --- Global State ---
+let db;
+let auth;
+let userId = 'MENUNGGU_AUTENTIKASI';
+let isPremium = false;
+let isSoundOn = localStorage.getItem('isSoundOn') === 'true';
 
-        // Helper untuk Path Firestore
-        const getPremiumStatusPath = (uid) => doc(db, 'artifacts', appId, 'public', 'data', 'premium_status', uid);
+// JANGAN LUPA GANTI INI DENGAN USER ID ANDA SENDIRI! (Ditemukan di header saat aplikasi dimuat)
+const ADMIN_UID = "ADMIN_ID_ANDA_DISINI"; // Ganti dengan UID Admin yang sebenarnya
 
-        // --- Firebase & Auth Initialization (Dibuat Robust) ---
-        async function initFirebase() {
-            const authStatusLine = document.getElementById('authStatusLine');
-            if (!authStatusLine) {
-                 console.warn("Elemen authStatusLine tidak ditemukan. Melewati update status.");
-            }
+let unsubscribePremiumStatus = () => { };
 
-            try {
-                // Langsung inisiasi menggunakan konfigurasi dari lingkungan Canvas
-                const app = initializeApp(firebaseConfig);
-                auth = getAuth(app);
-                db = getFirestore(app);
+// --- Utility Functions ---
 
-                if (authStatusLine) {
-                    authStatusLine.innerHTML = '[$ SYSTEM] <span class="text-yellow-500">Mengautentikasi...</span>';
-                }
+/**
+ * Mengonversi string HTML menjadi elemen DOM.
+ * @param {string} htmlString 
+ * @returns {HTMLElement}
+ */
+function htmlToElement(htmlString) {
+    const template = document.createElement('template');
+    template.innerHTML = htmlString.trim();
+    return template.content.firstChild;
+}
 
-                await setPersistence(auth, browserSessionPersistence);
-
-                // Mengambil __initial_auth_token dari global scope
-                const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
-
-                let authSuccess = false;
-
-                if (initialAuthToken) {
-                    try {
-                        await signInWithCustomToken(auth, initialAuthToken);
-                        authSuccess = true;
-                    } catch (e) {
-                        console.warn("[$ AUTH WARN] Custom Token gagal. Mencoba Anonymous:", e.code);
-                    }
-                }
-
-                if (!authSuccess) {
-                    await signInAnonymously(auth);
-                }
-
-                // Get unique user ID
-                userId = auth.currentUser?.uid || crypto.randomUUID();
-                const displayUserIdElement = document.getElementById('displayUserId');
-                if (displayUserIdElement) {
-                    displayUserIdElement.textContent = userId;
-                }
-
-                if (authStatusLine) {
-                    authStatusLine.innerHTML = '[$ SYSTEM] <span class="text-cyan-500">Otentikasi OK. ID dimuat.</span>';
-                }
-                console.log("Firebase Auth OK. User ID Anda:", userId);
-
-                // Initialize Firestore Listener
-                setupPremiumStatusListener();
-
-                // Check if current user is admin and show the panel
-                const adminPanel = document.getElementById('adminPanel');
-                if (adminPanel) {
-                    if (userId === ADMIN_USER_ID) {
-                        adminPanel.classList.remove('hidden');
-                        console.log("Mode Admin Aktif.");
-                    } else {
-                        adminPanel.classList.add('hidden');
-                        console.log("Mode User Biasa Aktif.");
-                    }
-                }
-
-            } catch (error) {
-                // Penanganan Error Umum Inisiasi Firebase
-                console.error("Firebase Auth/Init Error: Gagal menginisiasi Firebase:", error);
-                if (authStatusLine) {
-                    authStatusLine.innerHTML = '[$ SYSTEM] <span class="text-red-500">AUTH FAILED: Sistem tidak dapat dimuat.</span>';
-                }
-
-                let displayError = `Gagal memuat sistem autentikasi/database. (Kode: ${error.code || 'UNKNOWN'}).`;
-                showMessageBox("[$ ERROR] Auth System Failed", displayError, false);
-            }
+/**
+ * Memutar suara notifikasi sederhana menggunakan Tone.js
+ * @param {string} frequency 
+ */
+function playSound(frequency = "C4") {
+    if (!isSoundOn || typeof Tone === 'undefined') return;
+    try {
+        // Cek dan start context jika belum berjalan
+        if (Tone.context.state !== 'running') {
+            Tone.start().catch(e => console.error("Gagal start Tone.js:", e));
+            return;
         }
+        const synth = new Tone.Synth().toDestination();
+        synth.triggerAttackRelease(frequency, "8n");
+        setTimeout(() => synth.dispose(), 1000);
+    } catch (e) {
+        console.warn("Tone.js error, mungkin belum sepenuhnya dimuat:", e);
+    }
+}
 
-        // --- Firestore Premium Status Listener ---
-        function setupPremiumStatusListener() {
-            if (!db || userId === 'USER_ID_BELUM_SIAP') return;
+// --- Firebase Initialization and Logic ---
 
-            unsubscribePremiumStatus();
+async function initFirebase() {
+    console.log("[$ INFO] Memulai inisialisasi Firebase...");
+    try {
+        const app = initializeApp(firebaseConfig);
+        db = getFirestore(app);
+        auth = getAuth(app);
 
-            unsubscribePremiumStatus = onSnapshot(getPremiumStatusPath(userId), (docSnapshot) => {
-                if (docSnapshot.exists()) {
-                    const data = docSnapshot.data();
-                    isPremium = data.isPremium === true;
-                } else {
-                    isPremium = false;
-                }
-                updatePremiumStatusUI();
-            }, (error) => {
-                console.error("Error listening to premium status:", error);
-                isPremium = false;
-                updatePremiumStatusUI();
-            });
-        }
-
-        // --- Tone.js Setup for Sound Effects ---
-        // Baca status suara dari localStorage secara aman di awal.
-        let isSoundOn = localStorage.getItem('sound') === 'true';
-
-        let synth = null;
-        try {
-            // Cek apakah Tone.js sudah dimuat (disediakan di <Script> di index.js)
-            if (typeof Tone !== 'undefined') {
-                // Mengurangi latency
-                Tone.context.lookAhead = 0.05;
-                synth = new Tone.MembraneSynth().toDestination();
-                synth.volume.value = -10;
-            } else {
-                console.warn("Tone.js (Library Sound) belum dimuat. Fungsi suara dinonaktifkan.");
-            }
-        } catch (e) {
-            console.warn("Tone.js failed to initialize:", e);
-        }
-
-        function playKeySound() {
-            if (isSoundOn && synth) {
-                synth.triggerAttackRelease("C3", "64n");
-            }
-        }
-
-        function playSystemSound() {
-            if (isSoundOn && synth) {
-                synth.triggerAttackRelease("A4", "8n");
-                synth.triggerAttackRelease("C5", "8n", "+0.1");
-            }
-        }
-
-        // --- Message Box Handlers (Custom implementation) ---
-        const messageBox = document.getElementById('messageBox');
-        const messageTitle = document.getElementById('messageTitle');
-        const messageText = document.getElementById('messageText');
-        const messageActions = document.getElementById('messageActions');
-        const closeMessageBox = document.getElementById('closeMessageBox');
+        await setPersistence(auth, browserSessionPersistence);
         
-        // Pastikan closeMessageBox ada sebelum menambahkan listener
-        if (closeMessageBox) {
-            closeMessageBox.addEventListener('click', () => {
-                if (messageBox) messageBox.classList.add('hidden');
-            });
-        }
-        
-
-        function showMessageBox(title, htmlContent, isSuccess = false, actions = []) {
-            if (!messageBox || !messageTitle || !messageText || !messageActions) {
-                 console.error("Message box elements not found. Cannot show message.");
-                 return;
-            }
-            
-            messageTitle.textContent = title;
-            messageText.innerHTML = htmlContent;
-
-            // Pastikan closeMessageBox ada sebelum ditambahkan
-            messageActions.innerHTML = '';
-            if (closeMessageBox) {
-                messageActions.appendChild(closeMessageBox);
-            }
-            
-            actions.forEach(action => messageActions.appendChild(action));
-
-            messageBox.classList.remove('hidden');
-
-            const boxDiv = messageBox.querySelector('div');
-            if (boxDiv) {
-                if (isSuccess) {
-                    boxDiv.classList.remove('border-red-500');
-                    boxDiv.classList.add('border-green-500');
-                    messageTitle.classList.remove('text-red-500');
-                    messageTitle.classList.add('text-neon');
-                    playSystemSound();
-                } else {
-                    boxDiv.classList.remove('border-green-500');
-                    boxDiv.classList.add('border-red-500');
-                    messageTitle.classList.remove('text-neon');
-                    messageTitle.classList.add('text-red-500');
-                }
-            }
+        // Autentikasi
+        if (initialAuthToken) {
+            await signInWithCustomToken(auth, initialAuthToken);
+            console.log("[$ SUCCESS] Autentikasi kustom berhasil.");
+        } else {
+            await signInAnonymously(auth);
+            console.log("[$ SUCCESS] Autentikasi anonim berhasil.");
         }
 
-        // --- UI Updates for Premium Status ---
-        const premiumBadge = document.getElementById('premiumBadge');
-        const premiumButton = document.getElementById('premiumButton');
-        const premiumSection = document.getElementById('premiumSection');
-        const currentStatusText = document.getElementById('currentStatusText');
-
-        function updatePremiumStatusUI() {
-            if (!premiumBadge || !premiumButton || !premiumSection || !currentStatusText) return;
-            
-            if (isPremium) {
-                premiumBadge.classList.remove('hidden');
-                premiumButton.textContent = '[$ STATUS] ALPHA-7 AKTIF';
-                premiumButton.classList.remove('bg-red-700', 'hover:bg-red-500', 'shadow-red-700/50');
-                premiumButton.classList.add('bg-green-600', 'hover:bg-green-400', 'shadow-green-600/50');
-                premiumButton.disabled = true;
-                premiumSection.classList.remove('border-green-900', 'shadow-green-900/50');
-                premiumSection.classList.add('border-yellow-600', 'shadow-yellow-600/50');
-                currentStatusText.textContent = 'AKTIF (Member Premium)';
-                currentStatusText.classList.remove('text-red-500');
-                currentStatusText.classList.add('text-green-500');
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                userId = user.uid;
+                console.log(`[$ INFO] User ID terdeteksi: ${userId}`);
+                renderUI(); // Render ulang setelah mendapatkan userId
+                setupPremiumListener(userId);
             } else {
-                premiumBadge.classList.add('hidden');
-                premiumButton.textContent = 'AKTIFKAN ALPHA-7 (QRIS & Admin Confirm)';
-                premiumButton.classList.add('bg-red-700', 'hover:bg-red-500', 'shadow-red-700/50');
-                premiumButton.classList.remove('bg-green-600', 'hover:bg-green-400', 'shadow-green-600/50');
-                premiumButton.disabled = false;
-                premiumSection.classList.add('border-green-900', 'shadow-green-900/50');
-                premiumSection.classList.remove('border-yellow-600', 'shadow-yellow-600/50');
-                currentStatusText.textContent = 'NON-AKTIF (Member Biasa)';
-                currentStatusText.classList.add('text-red-500');
-                currentStatusText.classList.remove('text-green-500');
-            }
-        }
-
-        // --- Core Logic (Typing & Data) ---
-        const outputDiv = document.getElementById('terminalOutput');
-        const searchButton = document.getElementById('searchButton');
-        const targetInput = document.getElementById('targetInput');
-        const errorMessage = document.getElementById('error-message');
-
-        function typeLine(text, delay = 50) {
-            return new Promise(resolve => {
-                if (!outputDiv) {
-                    console.error("Terminal output element not found. Cannot type.");
-                    return resolve();
-                }
-                
-                const line = document.createElement('p');
-                outputDiv.appendChild(line);
-
-                let i = 0;
-                const cursor = document.createElement('span');
-                cursor.className = 'typing-cursor';
-                line.appendChild(cursor);
-
-                const interval = setInterval(() => {
-                    if (i < text.length) {
-                        const char = text.charAt(i);
-                        line.insertBefore(document.createTextNode(char), cursor);
-                        playKeySound();
-                        i++;
-                        outputDiv.scrollTop = outputDiv.scrollHeight;
-                    } else {
-                        clearInterval(interval);
-                        line.removeChild(cursor);
-                        resolve();
-                    }
-                }, delay);
-            });
-        }
-
-        // --- Dynamic Data Generator (DIPERBARUI AGAR LEBIH REALISTIS) ---
-        function generateFictionalData(inputQuery, searchType) {
-            // Simple hash based on input and time for variable results
-            const timeSeed = new Date().getMinutes() + new Date().getSeconds();
-            const inputSeed = inputQuery.length + inputQuery.charCodeAt(0) * 10;
-            const hash = (inputSeed * timeSeed) % 1000;
-
-            // Normalisasi Kueri untuk Personalization
-            const normalizedQuery = inputQuery.replace(/[^a-zA-Z0-9\s]/g, '').trim();
-            const queryWords = normalizedQuery.split(/\s+/).filter(w => w.length > 2);
-            const queryPart = queryWords[0] || 'Anonim';
-            // const queryHash = normalizedQuery.length; // unused
-
-            // Elemen Realistis Indonesia
-            const provinces = ['DKI Jakarta', 'Jawa Barat', 'Banten', 'Jawa Timur', 'Sumatera Utara'];
-            const cities = {
-                'DKI Jakarta': ['Jakarta Selatan', 'Jakarta Timur', 'Jakarta Barat'],
-                'Jawa Barat': ['Bandung', 'Bekasi', 'Depok'],
-                'Banten': ['Tangerang', 'Serang'],
-                'Jawa Timur': ['Surabaya', 'Malang'],
-                'Sumatera Utara': ['Medan']
-            };
-
-            const province = provinces[hash % provinces.length];
-            const cityList = cities[province] || [province];
-            const city = cityList[hash % cityList.length];
-
-            const streetType = ['Jalan Raya', 'Gang', 'Komplek', 'Perumahan'][hash % 4];
-            const streetSuffix = ['Indah', 'Permai', 'Mawar', 'Seroja', 'Kencana'][hash % 5];
-            const streetName = `${streetType} ${queryPart} ${streetSuffix}`;
-
-            // Derived Data
-            const basePhonePrefix = (searchType === 'nomor_hp') ? inputQuery.slice(0, 6) : `+62 81${hash % 9}x`;
-            const basePhone = `${basePhonePrefix}-${(1000 + hash).toString().padStart(4, '0')}-xxxx`;
-
-            // NIK Pattern (Fiksional tapi mengikuti format region: 32 = Jabar, 31 = Jakarta, 36 = Banten)
-            const nikPrefixMap = { 'Jawa Barat': '32', 'DKI Jakarta': '31', 'Banten': '36', 'Jawa Timur': '35', 'Sumatera Utara': '12' };
-            const nikPrefix = nikPrefixMap[province] || '33'; // Default Jawa Tengah
-            const baseNIK = `${nikPrefix}0${hash % 9}${hash % 10}**${(hash * 37) % 10000}00${(hash % 10)}`;
-
-            const nickname = (searchType === 'nama' || searchType === 'email')
-                ? `${queryPart.substring(0, 1).toUpperCase()}${queryPart.substring(1).toLowerCase()}***`
-                : `Anonim ${String(hash).slice(-3)}`;
-
-            const domain = ['gmail.com', 'yahoo.co.id', 'outlook.com', 'mail.osint'][hash % 4];
-            const email = (searchType === 'email') ? inputQuery : `${queryPart.toLowerCase()}${hash % 10}${hash % 100}@${domain}`;
-
-            return {
-                fullName: (searchType === 'nama') ? `${queryPart} ${['Putra', 'Wijaya', 'Santoso', 'Hadi', 'Nugraha'][hash % 5]} ${String.fromCharCode(65 + (hash % 26))}**` : `${queryPart} ${['Purnama', 'Sutrisno'][hash % 2]}`,
-                nickname: nickname,
-                nik: baseNIK.replace(/(\*)/g, 'X'),
-                kk: baseNIK.replace(/(\*)/g, 'Y'),
-                plate: `B ${1000 + hash} ${String.fromCharCode(65 + (hash % 26))}${(hash % 10)} ${hash % 100}**`,
-                phone: basePhone.replace(/(\*)/g, 'X'),
-                // Alamat dibuat sangat detail dan realistis
-                address: `${streetName} No. ${hash % 10}, RT 0${hash % 9 + 1}/ RW 0${hash % 5 + 1}, Kel. S***** J***, Kec. C**** P****, ${city}, ${province}`,
-                realtimeLocation: `Lokasi Terakhir Dideteksi: ${streetName}, ${city} (${hash % 3 + 1} Jam Lalu)`,
-                device: `ANDROID ${12 + (hash % 4)} (Samsung Galaxy S2${(hash % 5) + 0}) / IOS 1${5 + (hash % 3)}.X (iPhone 1${(hash % 5) + 0} Pro)`,
-                education: [`Universitas G*** M*** (S1, 20XX)`, `SMAN ${10 + hash % 10} ${city}`],
-                family: [`Istri/Pasangan: N** ** (No. HP: ${basePhone.replace('x', '*')})`, `Orang Tua: B*** S*** (NIK: ${baseNIK.slice(0, 8)}********)`],
-                photoLink: `https://placehold.co/100x150/ff0000/ffffff?text=FOTO_CENSORED_${queryPart}`,
-                hangout: [`Pusat Perbelanjaan ${city} (4 Hari Lalu)`, `Kedai Kopi ${queryPart} (1 Hari Lalu)`],
-                officeName: `PT. ${queryPart.toUpperCase()} Digitalindo`,
-                officeAddress: `Gedung ${['Astra', 'Equity', 'Cyber'][hash % 3]} Tower Lantai 1${hash % 10}, ${streetName}, ${city}, ${province}`,
-                socmed: [`https://www.instagram.com/${queryPart.toLowerCase()}_***`, `https://www.facebook.com/${queryPart.toLowerCase()}***`, `https://t.me/${queryPart.toLowerCase()}_osint`],
-                email: email
-            };
-        }
-
-        async function generateFakeResult(inputQuery) {
-            // Perbedaan Performa
-            const initialDelayMins = isPremium ? 3.5 : 15.3;
-            const loopCount = isPremium ? 1 : 3;
-            const delayMs = isPremium ? 500 : 1000;
-            const speedText = isPremium ? "DIPERCEPAT (1-5m)" : "NORMAL (10-30m)";
-
-            const searchType = document.getElementById('searchType').value;
-            const data = generateFictionalData(inputQuery, searchType);
-
-            await typeLine(`[$ PROTOCOL] Mengautentikasi kunci akses level 7...`, 20);
-            await typeLine(`[$ PROTOCOL] Kueri: ${inputQuery} | Tipe: ${searchType.toUpperCase()}`, 20);
-            await typeLine(`[$ PROTOCOL] Menginisiasi modul Dox-Kernel 7.1.x`, 20);
-            await typeLine(`[$ PROCESS] Estimasi Waktu Proses: ${initialDelayMins} menit | Mode: ${speedText}.`, 5);
-
-            for (let i = 1; i <= loopCount; i++) {
-                await typeLine(`[$ PROCESS] Status: Menganalisis Layer Data ${i}/7...`, 5);
-                await new Promise(r => setTimeout(r, delayMs));
-            }
-
-            // --- FEATURE DIFFERENTIATION (PENGURANGAN CENSORING UNTUK PREMIUM) ---
-            // Member Biasa: Sensor Penuh
-            const plateCensored = data.plate.replace(/([A-Z] \d{4} [A-Z]{2}) \/ ([A-Z]{2} \d{4})/, '$1 / ** ******');
-            const officeAddressCensored = 'Lokasi Office: ***** [Layer 6 Restricted]';
-            const phoneCensored = data.phone.replace(/(\d{4}-)/, '****-');
-
-            // Member Premium: Sensor dikurangi (Layer 6 Access)
-            const plateDisplay = isPremium ? `${data.plate} <span class="text-cyan-400">[PRIORITY DETAIL]</span>` : plateCensored;
-            const officeAddressDisplay = isPremium ? `Lokasi Office: ${data.officeAddress}` : officeAddressCensored;
-            const phoneDisplay = isPremium ? data.phone : phoneCensored;
-            // ----------------------------------------------------------------------
-
-
-            await typeLine(`[$ RESULT] ** Data Ditemukan & Di-Dekripsi (Level 7) **`, 30);
-            await typeLine(`--------------------------------------------------------------------------------`, 5);
-
-            const lines = [
-                `> Nama Lengkap: <span class="text-yellow-400">${data.fullName}</span>`,
-                `> Nama Panggilan: ${data.nickname}`,
-                `> NIK/KK Target: ${data.nik} / ${data.kk}`,
-                `> Email Utama: ${data.email}`,
-                `> Plat Kendaraan: ${plateDisplay}`,
-                `> Telepon/WA: <span class="text-yellow-400">${phoneDisplay}</span>`,
-                `> Alamat Domisili (Real Time): ${data.realtimeLocation}`,
-                `> Domisili Terakhir: ${data.address}`,
-                `> Info Perangkat: ${data.device}`,
-                `> --- [INFORMASI SOSIAL MEDIA (COOKIES/LINK)] ---`,
-                `> Instagram: <span class="censored">${data.socmed[0]}</span>`,
-                `> Facebook: <span class="censored">${data.socmed[1]}</span>`,
-                `> Telegram: <span class="censored">${data.socmed[2]}</span>`,
-                `> --- [INFORMASI PRIBADI & PEKERJAAN] ---`,
-                `> Data Keluarga: ${data.family.join(' | ')}`,
-                `> Riwayat Pendidikan: ${data.education.join(' | ')}`,
-                `> Jabatan/Pekerjaan: ${data.officeName} | ${officeAddressDisplay}`,
-                `> Lokasi Kunjungan Terakhir (7 Hari): ${data.hangout.join(' | ')}`,
-                `> Tautan Foto: <span class="censored">${data.photoLink}</span>`,
-                `--------------------------------------------------------------------------------`,
-                `[$ SUCCESS] ** Prosedur Data-Doxing Selesai. **`,
-                `[$ SYSTEM] Siap menerima Kueri Baru.`
-            ];
-
-            for (const line of lines) {
-                await typeLine(line, line.includes('SUCCESS') ? 100 : 15);
-            }
-
-            playSystemSound();
-            if (searchButton) searchButton.disabled = false;
-        }
-
-        // --- Event Handlers ---
-
-        // Main Search Handler
-        if (searchButton) {
-            searchButton.addEventListener('click', async () => {
-                const input = targetInput ? targetInput.value.trim() : '';
-                const searchType = document.getElementById('searchType')?.value || '';
-
-                // Cek jika Firebase belum siap
-                if (userId === 'USER_ID_BELUM_SIAP') {
-                    showMessageBox("[$ WARNING] Sistem Belum Siap", "Autentikasi Firebase belum selesai. Mohon tunggu sejenak hingga 'User ID' muncul.", false);
-                    return;
-                }
-
-                if (input === '') {
-                    if (errorMessage) errorMessage.classList.remove('hidden');
-                    if (outputDiv) outputDiv.scrollTop = outputDiv.scrollHeight;
-                    return;
-                }
-                if (errorMessage) errorMessage.classList.add('hidden');
-
-                searchButton.disabled = true;
-                if (outputDiv) outputDiv.innerHTML = '';
-                if (outputDiv) outputDiv.appendChild(document.createElement('br'));
-
-                await typeLine(`[$ RUN] Menginisiasi pencarian data...`, 15);
-                await typeLine(`[$ TARGET] Kueri: ${input} (${searchType.toUpperCase()})`, 15);
-
-                await generateFakeResult(input);
-            });
-        }
-
-        // Premium Button Handler (USER INSTRUCTION)
-        if (premiumButton) {
-            premiumButton.addEventListener('click', () => {
-
-                // HTML content for payment instructions
-                const instructionsHtml = `
-                <h4 class="text-lg font-bold text-neon mb-4">Langkah-Langkah Konfirmasi Pembayaran</h4>
-                
-                <p class="text-sm mb-4 text-left">
-                    1. Lakukan pembayaran **Rp 399.000** (+ Gratis 1 Bulan) melalui **QRIS** di bawah ini:
-                </p>
-                
-                <div class="flex justify-center mb-4 p-2 bg-white rounded-md">
-                    <img src="https://placehold.co/200x200/000000/ffffff?text=QRIS_SCAN" alt="QRIS Placeholder" class="w-48 h-48 border-2 border-green-500 rounded-md">
-                </div>
-
-                <p class="text-xs text-center text-gray-500 mb-4">
-                    (Gunakan aplikasi pembayaran Anda yang mendukung QRIS. Pastikan jumlahnya tepat.)
-                </p>
-
-                <p class="text-sm mb-2 text-left text-yellow-500">
-                    **LANGKAH KONFIRMASI WAJIB (Admin Verifikasi):**
-                </p>
-                <p class="text-sm mb-4 text-left">
-                    2. Setelah transfer, kirimkan **bukti pembayaran** (screenshot) dan **USER ID Anda** (tertera di bawah) ke kontak Admin kami melalui Telegram: 
-                    <a href="https://t.me/Youghoz" target="_blank" class="text-cyan-400 hover:text-cyan-200 font-bold">@Youghoz</a>
-                </p>
-                <p class="text-sm mb-2 text-left">
-                    3. User ID Anda (WAJIB disertakan):
-                </p>
-                <div class="user-id-display text-left">
-                    <span class="text-red-500 font-bold">${userId}</span>
-                </div>
-                <p class="text-xs mt-4 text-gray-500">
-                    Status Premium akan aktif setelah **Admin memverifikasi** pembayaran dan User ID Anda. Proses Verifikasi Admin: 1-5 Menit.
-                </p>
-                `;
-
-                showMessageBox(
-                    "[[ ALPHA-7 PAYMENT VIA QRIS & TELEGRAM ]]",
-                    instructionsHtml,
-                    false
-                );
-            });
-        }
-
-        // Admin Panel Logic (ADMIN ACTION)
-        const activatePremiumButton = document.getElementById('activatePremiumButton');
-        if (activatePremiumButton) {
-            activatePremiumButton.addEventListener('click', async () => {
-                const targetUidInput = document.getElementById('targetUserIdInput');
-                const targetUid = targetUidInput ? targetUidInput.value.trim() : '';
-                const adminStatus = document.getElementById('adminStatus');
-                
-                if (!adminStatus) return;
-                
-                adminStatus.classList.remove('hidden');
-                adminStatus.textContent = 'Status: Memproses aktivasi Premium...';
-
-                if (!targetUid) {
-                    adminStatus.textContent = '[$ ERROR] Target User ID tidak boleh kosong. Masukkan ID dari Telegram.';
-                    adminStatus.classList.remove('text-yellow-400');
-                    adminStatus.classList.add('text-red-500');
-                    return;
-                }
-
-                // Safety check agar tidak mengaktifkan admin ID itu sendiri
-                if (targetUid === ADMIN_USER_ID) {
-                    adminStatus.textContent = '[$ ERROR] User ID Admin tidak perlu diaktifkan.';
-                    adminStatus.classList.remove('text-yellow-400');
-                    adminStatus.classList.add('text-red-500');
-                    return;
-                }
-
-                try {
-                    // Write premium status to Firestore
-                    await setDoc(getPremiumStatusPath(targetUid), {
-                        isPremium: true,
-                        activatedBy: userId, // Log which admin activated it
-                        activationDate: new Date().toISOString()
-                    }, { merge: true });
-
-                    adminStatus.textContent = `[$ SUCCESS] User ID ${targetUid.substring(0, 10)}... telah diaktifkan! Status Premium diperbarui. Konfirmasi Selesai.`;
-                    adminStatus.classList.add('text-green-500');
-                    adminStatus.classList.remove('text-red-500', 'text-yellow-400');
-
-                } catch (error) {
-                    console.error("ADMIN ERROR activating premium:", error);
-                    adminStatus.textContent = `[$ FATAL ERROR] Gagal menyimpan ke database. Cek konsol.`;
-                    adminStatus.classList.remove('text-yellow-400', 'text-green-500');
-                    adminStatus.classList.add('text-red-500');
-                }
-            });
-        }
-
-
-        // Jalankan script setelah DOM siap sepenuhnya
-        // INI ADALAH BAGIAN KRUSIAL UNTUK MEMPERBAIKI TypeError
-        window.addEventListener('DOMContentLoaded', () => {
-            initFirebase();
-            
-            // Tone.js fix (agar bisa dipicu lewat interaksi)
-            document.body.addEventListener('click', () => {
-              if (typeof Tone !== 'undefined' && Tone.context.state !== 'running') {
-                Tone.start();
-              }
-            }, { once: true });
-            
-            // --- Setup awal sound toggle (FIXED CRASH HERE) ---
-            const soundToggle = document.getElementById('soundToggle');
-            const soundIndicator = document.querySelector('.toggle-circle');
-            const indicatorWrapper = document.getElementById('soundIndicator'); // Mengacu ke div wrapper
-            
-            if (soundToggle && soundIndicator && indicatorWrapper) {
-                
-                // Sinkronkan state checkbox dengan isSoundOn (yang dibaca dari localStorage)
-                soundToggle.checked = isSoundOn;
-                
-                // Terapkan UI awal
-                if (isSoundOn) {
-                    soundIndicator.classList.add('translate-x-3');
-                    indicatorWrapper.classList.add('bg-green-500');
-                    indicatorWrapper.classList.remove('bg-gray-500');
-                } else {
-                    soundIndicator.classList.add('translate-x-0');
-                    indicatorWrapper.classList.add('bg-gray-500');
-                    indicatorWrapper.classList.remove('bg-green-500');
-                }
-                
-                // Tambahkan listener sekarang, setelah elemen DITEMUKAN
-                soundToggle.addEventListener('change', () => {
-                    isSoundOn = soundToggle.checked;
-                    localStorage.setItem('sound', isSoundOn ? 'true' : 'false'); // Persist state
-
-                    soundIndicator.classList.toggle('translate-x-3');
-                    soundIndicator.classList.toggle('translate-x-0');
-                    indicatorWrapper.classList.toggle('bg-green-500');
-                    indicatorWrapper.classList.toggle('bg-gray-500');
-
-                    if (isSoundOn) {
-                        if (typeof Tone !== 'undefined' && Tone.context.state !== 'running') {
-                            Tone.start().then(() => playSystemSound());
-                        } else {
-                            playSystemSound();
-                        }
-                    }
-                });
-            } else {
-              console.warn('Sound toggle elements not found in DOM. Sound feature disabled.');
+                console.log("[$ WARNING] Tidak ada pengguna terautentikasi.");
+                userId = 'TIDAK_TERAUTENTIKASI';
+                renderUI();
             }
         });
+
+    } catch (error) {
+        console.error("[$ FATAL ERROR] Kesalahan inisialisasi Firebase:", error);
+        document.getElementById('root').innerHTML = `<div class="p-8 text-center text-red-600 bg-red-100 rounded-lg">Gagal inisialisasi Firebase. Cek konsol untuk detail error.</div>`;
+    }
+}
+
+/**
+ * Mengatur listener real-time untuk status premium pengguna
+ * @param {string} uid 
+ */
+function setupPremiumListener(uid) {
+    // Hentikan listener lama jika ada
+    unsubscribePremiumStatus(); 
+
+    const userDocRef = doc(db, "artifacts", appId, "users", uid, "data", "profile");
+    
+    // Mulai listener baru
+    unsubscribePremiumStatus = onSnapshot(userDocRef, (docSnap) => {
+        const premiumStatusElement = document.getElementById('premiumStatus');
+        const userIdElement = document.getElementById('currentUserId');
+        const adminPanel = document.getElementById('adminPanel');
+        
+        if (docSnap.exists() && docSnap.data().isPremium === true) {
+            isPremium = true;
+            premiumStatusElement.textContent = 'STATUS: PREMIUM AKTIF';
+            premiumStatusElement.classList.add('text-green-500');
+            premiumStatusElement.classList.remove('text-yellow-500');
+            playSound("G4");
+            console.log("[$ INFO] Status Premium Aktif.");
+        } else {
+            isPremium = false;
+            premiumStatusElement.textContent = 'STATUS: Non-Premium';
+            premiumStatusElement.classList.remove('text-green-500');
+            premiumStatusElement.classList.add('text-yellow-500');
+            console.log("[$ INFO] Status Non-Premium.");
+        }
+
+        // Tampilkan UID dan Admin Panel jika sudah siap
+        if (userIdElement) userIdElement.textContent = `UID: ${uid}`;
+        if (adminPanel) adminPanel.style.display = (uid === ADMIN_UID) ? 'block' : 'none';
+        
+    }, (error) => {
+        console.error("[$ ERROR] Error mendengarkan status premium:", error);
+    });
+}
+
+
+// --- UI Rendering and Event Handlers (Fix for Blank Screen) ---
+
+/**
+ * Membangun dan merender seluruh antarmuka aplikasi.
+ */
+function renderUI() {
+    const root = document.getElementById('root');
+    if (!root) return;
+
+    // Bersihkan root sebelum render
+    root.innerHTML = '';
+    
+    // Pastikan adminPanel logic hanya dipasang setelah elemen ada
+    const isAdmin = userId === ADMIN_UID;
+    
+    const uiContent = htmlToElement(`
+        <div id="appContainer" class="min-h-screen bg-gray-50 flex flex-col items-center justify-center p-4">
+            
+            <!-- Main Card -->
+            <div class="w-full max-w-2xl bg-white shadow-xl rounded-xl p-6 md:p-10 space-y-6">
+                
+                <h1 class="text-3xl font-extrabold text-gray-800 text-center border-b pb-4">
+                    Sistem Pemrosesan Data OSINT V7
+                </h1>
+
+                <!-- User & Status Section -->
+                <div class="flex flex-col md:flex-row justify-between items-start md:items-center p-4 bg-blue-50 rounded-lg shadow-sm">
+                    <div class="space-y-1">
+                        <p id="currentUserId" class="text-sm font-mono text-gray-700 break-all">
+                            UID: ${userId}
+                        </p>
+                        <p id="premiumStatus" class="text-lg font-bold ${isPremium ? 'text-green-500' : 'text-yellow-500'}">
+                            STATUS: ${isPremium ? 'PREMIUM AKTIF' : 'Non-Premium'}
+                        </p>
+                    </div>
+
+                    <!-- Sound Toggle -->
+                    <div class="mt-4 md:mt-0 flex items-center space-x-2">
+                        <span class="text-sm text-gray-600">Sound FX</span>
+                        <button id="soundToggle" class="relative inline-flex items-center h-6 w-11 rounded-full transition-colors focus:outline-none 
+                            ${isSoundOn ? 'bg-green-500' : 'bg-gray-400'}" role="switch" aria-checked="${isSoundOn}">
+                            <span id="soundIndicator" class="inline-block w-4 h-4 transform rounded-full bg-white shadow-lg transition-transform 
+                                ${isSoundOn ? 'translate-x-6' : 'translate-x-1'}"></span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Main Content Placeholder -->
+                <div id="mainContent" class="text-center p-6 border border-dashed rounded-lg text-gray-500">
+                    <p class="mb-2">Aplikasi utama berjalan di sini.</p>
+                    <p>Status Premium: ${isPremium ? 'Akses penuh' : 'Akses terbatas'}</p>
+                    <!-- Logika dan hasil OSINT akan ditampilkan di area ini -->
+                </div>
+
+                <!-- Admin Panel (Hanya ditampilkan untuk ADMIN_UID) -->
+                <div id="adminPanel" style="display: ${isAdmin ? 'block' : 'none'};" class="bg-red-50 border border-red-200 p-6 rounded-lg space-y-4">
+                    <h2 class="text-xl font-bold text-red-600 border-b pb-2">ADMIN PANEL: Aktivasi Premium</h2>
+                    <input id="targetUidInput" type="text" placeholder="Masukkan UID Target untuk Aktivasi Premium" 
+                           class="w-full p-3 border border-gray-300 rounded-md focus:ring-red-500 focus:border-red-500">
+                    <button id="activatePremiumBtn" class="w-full bg-red-600 hover:bg-red-700 text-white font-semibold py-3 rounded-md transition duration-150">
+                        Aktifkan Premium
+                    </button>
+                    <p id="adminStatus" class="text-sm text-center text-yellow-400 font-medium">[ $ INFO ] Siap.</p>
+                </div>
+
+            </div>
+            
+            <p class="mt-4 text-xs text-gray-500">Powered by Next.js & Firebase Firestore</p>
+        </div>
+    `);
+
+    root.appendChild(uiContent);
+    
+    // Pasang Event Listeners setelah elemen UI ada
+    setupEventListeners();
+}
+
+/**
+ * Mengatur semua event listener untuk interaksi UI
+ */
+function setupEventListeners() {
+    const soundToggle = document.getElementById('soundToggle');
+    const soundIndicator = document.getElementById('soundIndicator');
+
+    if (soundToggle && soundIndicator) {
+        // Sound Toggle Handler
+        soundToggle.onclick = () => {
+            isSoundOn = !isSoundOn;
+            localStorage.setItem('isSoundOn', isSoundOn);
+
+            // Update UI
+            if (isSoundOn) {
+                soundIndicator.classList.add('translate-x-6');
+                soundIndicator.classList.remove('translate-x-1');
+                soundToggle.classList.add('bg-green-500');
+                soundToggle.classList.remove('bg-gray-400');
+                soundToggle.setAttribute('aria-checked', 'true');
+                playSound("C5"); // Test sound
+            } else {
+                soundIndicator.classList.remove('translate-x-6');
+                soundIndicator.classList.add('translate-x-1');
+                soundToggle.classList.remove('bg-green-500');
+                soundToggle.classList.add('bg-gray-400');
+                soundToggle.setAttribute('aria-checked', 'false');
+            }
+        };
+    }
+    
+    const activatePremiumBtn = document.getElementById('activatePremiumBtn');
+    
+    if (activatePremiumBtn) {
+        // Admin Button Handler
+        activatePremiumBtn.addEventListener('click', async () => {
+            if (!db || userId !== ADMIN_UID) {
+                console.error("[$ FATAL ERROR] Admin panel diakses oleh non-admin atau database belum siap.");
+                return;
+            }
+
+            const targetUidInput = document.getElementById('targetUidInput');
+            const adminStatus = document.getElementById('adminStatus');
+            const targetUid = targetUidInput.value.trim();
+
+            if (!targetUid) {
+                adminStatus.textContent = `[$ WARNING] Masukkan UID target!`;
+                adminStatus.classList.remove('text-green-500', 'text-red-500');
+                adminStatus.classList.add('text-yellow-400');
+                return;
+            }
+
+            adminStatus.textContent = `[$ INFO] Memproses aktivasi untuk ${targetUid.substring(0, 10)}...`;
+            adminStatus.classList.remove('text-green-500', 'text-red-500');
+            adminStatus.classList.add('text-yellow-400');
+
+            try {
+                // Path: /artifacts/{appId}/users/{targetUid}/data/profile
+                const targetDocRef = doc(db, "artifacts", appId, "users", targetUid, "data", "profile");
+                
+                // Menetapkan status premium
+                await setDoc(targetDocRef, { 
+                    isPremium: true,
+                    activatedBy: userId,
+                    activatedAt: new Date().toISOString()
+                }, { merge: true });
+
+                adminStatus.textContent = `[$ SUCCESS] User ID ${targetUid.substring(0, 10)}... telah diaktifkan! Status Premium diperbarui. Konfirmasi Selesai.`;
+                adminStatus.classList.add('text-green-500');
+                adminStatus.classList.remove('text-red-500', 'text-yellow-400');
+                playSound("A4");
+
+            } catch (error) {
+                console.error("ADMIN ERROR activating premium:", error);
+                adminStatus.textContent = `[$ FATAL ERROR] Gagal menyimpan ke database. Cek konsol.`;
+                adminStatus.classList.remove('text-yellow-400', 'text-green-500');
+                adminStatus.classList.add('text-red-500');
+                playSound("F3");
+            }
+        });
+    }
+}
+
+
+// --- Initialization on Load ---
+window.onload = () => {
+    // 1. Inisialisasi Firebase dan Autentikasi
+    initFirebase();
+    
+    // 2. Setup Tone.js AudioContext Resume (Fix for AudioContext Error)
+    // AudioContext harus dimulai setelah gesture pengguna (klik).
+    // Kita tambahkan listener ke body, dan hapus setelah dipicu.
+    document.body.addEventListener('click', () => {
+        if (typeof Tone !== 'undefined' && Tone.context.state !== 'running') {
+            Tone.start().then(() => {
+                console.log("[$ SUCCESS] Tone.js AudioContext berhasil dimulai setelah klik pengguna.");
+            }).catch(e => {
+                console.error("[$ ERROR] Gagal memulai Tone.js AudioContext:", e);
+            });
+        }
+    }, { once: true });
+    
+    // 3. Render UI awal (sebelum setupFirebase selesai, untuk menghindari layar kosong)
+    // Setelah Firebase selesai, renderUI akan dipanggil lagi di onAuthStateChanged.
+    renderUI(); 
+}
