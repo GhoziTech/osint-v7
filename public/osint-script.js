@@ -534,3 +534,31 @@
                 document.getElementById('soundIndicator').classList.add('bg-gray-500');
             }
         }
+        // Jalankan script setelah DOM siap sepenuhnya
+        window.addEventListener('DOMContentLoaded', () => {
+          initFirebase();
+        
+          // Tone.js fix (agar bisa dipicu lewat interaksi)
+          document.body.addEventListener('click', () => {
+            if (Tone && Tone.context.state !== 'running') {
+              Tone.start();
+            }
+          }, { once: true });
+        
+          // Setup awal sound toggle
+          const soundToggle = document.getElementById('soundToggle');
+          const soundIndicator = document.querySelector('.toggle-circle');
+        
+          if (soundToggle && soundIndicator) {
+            let isSoundOn = soundToggle.checked;
+            if (isSoundOn) {
+              soundIndicator.classList.add('translate-x-3');
+              document.getElementById('soundIndicator').classList.add('bg-green-500');
+            } else {
+              soundIndicator.classList.add('translate-x-0');
+              document.getElementById('soundIndicator').classList.add('bg-gray-500');
+            }
+          } else {
+            console.warn('Sound toggle or indicator not found in DOM.');
+          }
+        });
