@@ -1,5 +1,5 @@
 {
-  "name": "osint-v7-vercel",
+  "name": "osint-v7",
   "version": "1.0.0",
   "private": true,
   "scripts": {
@@ -8,9 +8,9 @@
     "start": "next start"
   },
   "dependencies": {
+    "firebase": "^11.6.1",
     "next": "latest",
     "react": "latest",
-    "react-dom": "latest",
-    "firebase": "latest"
+    "react-dom": "latest"
   }
 }
