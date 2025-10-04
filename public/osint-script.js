@@ -2,13 +2,24 @@
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken, setPersistence, browserSessionPersistence } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // setLogLevel('debug'); // Aktifkan ini jika Anda ingin melihat log debug Firebase
 
         // Inisialisasi Firebase Global Variables (Required for Canvas Environment)
         // Mengambil Environment Variable dari Netlify (via globalThis / window)
         const firebaseConfig = (() => {
             try {
+                // Menggunakan variabel global yang disediakan oleh Canvas
                 const env = window.FIREBASE_CONFIG_JSON || globalThis.FIREBASE_CONFIG_JSON;
-                return JSON.parse(env);
+                const config = JSON.parse(env);
+                
+                // Jika config tidak valid, gunakan konfigurasi dummy/default
+                if (!config || !config.apiKey) {
+                    console.warn("[$ WARN] Menggunakan konfigurasi Firebase dummy/default.");
+                    return { apiKey: "", authDomain: "", projectId: "dummy-id", storageBucket: "", messagingSenderId: "", appId: "" };
+                }
+                return config;
             } catch (e) {
                 console.error("Gagal parsing FIREBASE_CONFIG_JSON:", e);
                 return {};
@@ -17,7 +28,7 @@
 
 
         const appId = window.APP_ID || globalThis.APP_ID || 'osint-v7';
-        const initialAuthToken = window.INITIAL_AUTH_TOKEN || globalThis.INITIAL_AUTH_TOKEN || null;
+        // const initialAuthToken = window.INITIAL_AUTH_TOKEN || globalThis.INITIAL_AUTH_TOKEN || null; // Tidak digunakan lagi, diakses dari global scope
 
         // --- Global State ---
         let db;
@@ -27,7 +38,7 @@
         let unsubscribePremiumStatus = () => { };
 
         // JANGAN LUPA GANTI INI DENGAN USER ID ANDA SENDIRI! (Ditemukan di header saat aplikasi dimuat)
-        const ADMIN_USER_ID = "ADMIN_1234567890_TELEGRAM";
+        const ADMIN_USER_ID = "0449C1CF-C4C2-4011-BFE0-3532C0FFDF48"; // Sesuai dengan format UUID
 
         // Helper untuk Path Firestore
         const getPremiumStatusPath = (uid) => doc(db, 'artifacts', appId, 'public', 'data', 'premium_status', uid);
@@ -35,6 +46,9 @@
         // --- Firebase & Auth Initialization (Dibuat Robust) ---
         async function initFirebase() {
             const authStatusLine = document.getElementById('authStatusLine');
+            if (!authStatusLine) {
+                 console.warn("Elemen authStatusLine tidak ditemukan. Melewati update status.");
+            }
 
             try {
                 // Langsung inisiasi menggunakan konfigurasi dari lingkungan Canvas
@@ -42,11 +56,14 @@
                 auth = getAuth(app);
                 db = getFirestore(app);
 
-                authStatusLine.innerHTML = '[$ SYSTEM] <span class="text-yellow-500">Mengautentikasi...</span>';
+                if (authStatusLine) {
+                    authStatusLine.innerHTML = '[$ SYSTEM] <span class="text-yellow-500">Mengautentikasi...</span>';
+                }
 
                 await setPersistence(auth, browserSessionPersistence);
 
-                const initialAuthToken = typeof INITIAL_AUTH_TOKEN !== 'undefined' ? INITIAL_AUTH_TOKEN : null;
+                // Mengambil __initial_auth_token dari global scope
+                const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
                 let authSuccess = false;
 
@@ -65,30 +82,39 @@
 
                 // Get unique user ID
                 userId = auth.currentUser?.uid || crypto.randomUUID();
-                document.getElementById('displayUserId').textContent = userId;
+                const displayUserIdElement = document.getElementById('displayUserId');
+                if (displayUserIdElement) {
+                    displayUserIdElement.textContent = userId;
+                }
 
-                authStatusLine.innerHTML = '[$ SYSTEM] <span class="text-cyan-500">Otentikasi OK. ID dimuat.</span>';
+                if (authStatusLine) {
+                    authStatusLine.innerHTML = '[$ SYSTEM] <span class="text-cyan-500">Otentikasi OK. ID dimuat.</span>';
+                }
                 console.log("Firebase Auth OK. User ID Anda:", userId);
 
                 // Initialize Firestore Listener
                 setupPremiumStatusListener();
 
                 // Check if current user is admin and show the panel
-                if (userId === ADMIN_USER_ID) {
-                    document.getElementById('adminPanel').classList.remove('hidden');
-                    console.log("Mode Admin Aktif.");
-                } else {
-                    document.getElementById('adminPanel').classList.add('hidden');
-                    console.log("Mode User Biasa Aktif.");
+                const adminPanel = document.getElementById('adminPanel');
+                if (adminPanel) {
+                    if (userId === ADMIN_USER_ID) {
+                        adminPanel.classList.remove('hidden');
+                        console.log("Mode Admin Aktif.");
+                    } else {
+                        adminPanel.classList.add('hidden');
+                        console.log("Mode User Biasa Aktif.");
+                    }
                 }
 
             } catch (error) {
                 // Penanganan Error Umum Inisiasi Firebase
                 console.error("Firebase Auth/Init Error: Gagal menginisiasi Firebase:", error);
-                authStatusLine.innerHTML = '[$ SYSTEM] <span class="text-red-500">AUTH FAILED: Sistem tidak dapat dimuat.</span>';
+                if (authStatusLine) {
+                    authStatusLine.innerHTML = '[$ SYSTEM] <span class="text-red-500">AUTH FAILED: Sistem tidak dapat dimuat.</span>';
+                }
 
                 let displayError = `Gagal memuat sistem autentikasi/database. (Kode: ${error.code || 'UNKNOWN'}).`;
-
                 showMessageBox("[$ ERROR] Auth System Failed", displayError, false);
             }
         }
@@ -115,17 +141,19 @@
         }
 
         // --- Tone.js Setup for Sound Effects ---
-        const soundToggle = document.getElementById('soundToggle');
-        const soundIndicator = document.querySelector('.toggle-circle');
-        let isSoundOn = soundToggle.checked;
+        // Baca status suara dari localStorage secara aman di awal.
+        let isSoundOn = localStorage.getItem('sound') === 'true';
 
         let synth = null;
         try {
-            if (Tone) {
+            // Cek apakah Tone.js sudah dimuat (disediakan di <Script> di index.js)
+            if (typeof Tone !== 'undefined') {
                 // Mengurangi latency
                 Tone.context.lookAhead = 0.05;
                 synth = new Tone.MembraneSynth().toDestination();
                 synth.volume.value = -10;
+            } else {
+                console.warn("Tone.js (Library Sound) belum dimuat. Fungsi suara dinonaktifkan.");
             }
         } catch (e) {
             console.warn("Tone.js failed to initialize:", e);
@@ -144,55 +172,54 @@
             }
         }
 
-        // Toggle Sound Logic
-        soundToggle.addEventListener('change', () => {
-            isSoundOn = soundToggle.checked;
-            soundIndicator.classList.toggle('translate-x-3');
-            soundIndicator.classList.toggle('translate-x-0');
-            document.getElementById('soundIndicator').classList.toggle('bg-green-500');
-            document.getElementById('soundIndicator').classList.toggle('bg-gray-500');
-            if (isSoundOn) {
-                if (Tone && Tone.context.state !== 'running') {
-                    Tone.start().then(() => playSystemSound());
-                } else {
-                    playSystemSound();
-                }
-            }
-        });
-
         // --- Message Box Handlers (Custom implementation) ---
         const messageBox = document.getElementById('messageBox');
         const messageTitle = document.getElementById('messageTitle');
         const messageText = document.getElementById('messageText');
         const messageActions = document.getElementById('messageActions');
         const closeMessageBox = document.getElementById('closeMessageBox');
-
-        closeMessageBox.addEventListener('click', () => {
-            messageBox.classList.add('hidden');
-        });
+        
+        // Pastikan closeMessageBox ada sebelum menambahkan listener
+        if (closeMessageBox) {
+            closeMessageBox.addEventListener('click', () => {
+                if (messageBox) messageBox.classList.add('hidden');
+            });
+        }
+        
 
         function showMessageBox(title, htmlContent, isSuccess = false, actions = []) {
+            if (!messageBox || !messageTitle || !messageText || !messageActions) {
+                 console.error("Message box elements not found. Cannot show message.");
+                 return;
+            }
+            
             messageTitle.textContent = title;
             messageText.innerHTML = htmlContent;
 
+            // Pastikan closeMessageBox ada sebelum ditambahkan
             messageActions.innerHTML = '';
-            messageActions.appendChild(closeMessageBox);
+            if (closeMessageBox) {
+                messageActions.appendChild(closeMessageBox);
+            }
+            
             actions.forEach(action => messageActions.appendChild(action));
 
             messageBox.classList.remove('hidden');
 
             const boxDiv = messageBox.querySelector('div');
-            if (isSuccess) {
-                boxDiv.classList.remove('border-red-500');
-                boxDiv.classList.add('border-green-500');
-                messageTitle.classList.remove('text-red-500');
-                messageTitle.classList.add('text-neon');
-                playSystemSound();
-            } else {
-                boxDiv.classList.remove('border-green-500');
-                boxDiv.classList.add('border-red-500');
-                messageTitle.classList.remove('text-neon');
-                messageTitle.classList.add('text-red-500');
+            if (boxDiv) {
+                if (isSuccess) {
+                    boxDiv.classList.remove('border-red-500');
+                    boxDiv.classList.add('border-green-500');
+                    messageTitle.classList.remove('text-red-500');
+                    messageTitle.classList.add('text-neon');
+                    playSystemSound();
+                } else {
+                    boxDiv.classList.remove('border-green-500');
+                    boxDiv.classList.add('border-red-500');
+                    messageTitle.classList.remove('text-neon');
+                    messageTitle.classList.add('text-red-500');
+                }
             }
         }
 
@@ -203,6 +230,8 @@
         const currentStatusText = document.getElementById('currentStatusText');
 
         function updatePremiumStatusUI() {
+            if (!premiumBadge || !premiumButton || !premiumSection || !currentStatusText) return;
+            
             if (isPremium) {
                 premiumBadge.classList.remove('hidden');
                 premiumButton.textContent = '[$ STATUS] ALPHA-7 AKTIF';
@@ -236,6 +265,11 @@
 
         function typeLine(text, delay = 50) {
             return new Promise(resolve => {
+                if (!outputDiv) {
+                    console.error("Terminal output element not found. Cannot type.");
+                    return resolve();
+                }
+                
                 const line = document.createElement('p');
                 outputDiv.appendChild(line);
 
@@ -271,7 +305,7 @@
             const normalizedQuery = inputQuery.replace(/[^a-zA-Z0-9\s]/g, '').trim();
             const queryWords = normalizedQuery.split(/\s+/).filter(w => w.length > 2);
             const queryPart = queryWords[0] || 'Anonim';
-            const queryHash = normalizedQuery.length;
+            // const queryHash = normalizedQuery.length; // unused
 
             // Elemen Realistis Indonesia
             const provinces = ['DKI Jakarta', 'Jawa Barat', 'Banten', 'Jawa Timur', 'Sumatera Utara'];
@@ -395,150 +429,189 @@
             }
 
             playSystemSound();
-            searchButton.disabled = false;
+            if (searchButton) searchButton.disabled = false;
         }
 
         // --- Event Handlers ---
 
         // Main Search Handler
-        searchButton.addEventListener('click', async () => {
-            const input = targetInput.value.trim();
-            const searchType = document.getElementById('searchType').value;
+        if (searchButton) {
+            searchButton.addEventListener('click', async () => {
+                const input = targetInput ? targetInput.value.trim() : '';
+                const searchType = document.getElementById('searchType')?.value || '';
 
-            // Cek jika Firebase belum siap
-            if (userId === 'USER_ID_BELUM_SIAP') {
-                showMessageBox("[$ WARNING] Sistem Belum Siap", "Autentikasi Firebase belum selesai. Mohon tunggu sejenak hingga 'User ID' muncul.", false);
-                return;
-            }
+                // Cek jika Firebase belum siap
+                if (userId === 'USER_ID_BELUM_SIAP') {
+                    showMessageBox("[$ WARNING] Sistem Belum Siap", "Autentikasi Firebase belum selesai. Mohon tunggu sejenak hingga 'User ID' muncul.", false);
+                    return;
+                }
 
-            if (input === '') {
-                errorMessage.classList.remove('hidden');
-                outputDiv.scrollTop = outputDiv.scrollHeight;
-                return;
-            }
-            errorMessage.classList.add('hidden');
+                if (input === '') {
+                    if (errorMessage) errorMessage.classList.remove('hidden');
+                    if (outputDiv) outputDiv.scrollTop = outputDiv.scrollHeight;
+                    return;
+                }
+                if (errorMessage) errorMessage.classList.add('hidden');
 
-            searchButton.disabled = true;
-            outputDiv.innerHTML = '';
-            outputDiv.appendChild(document.createElement('br'));
+                searchButton.disabled = true;
+                if (outputDiv) outputDiv.innerHTML = '';
+                if (outputDiv) outputDiv.appendChild(document.createElement('br'));
 
-            await typeLine(`[$ RUN] Menginisiasi pencarian data...`, 15);
-            await typeLine(`[$ TARGET] Kueri: ${input} (${searchType.toUpperCase()})`, 15);
+                await typeLine(`[$ RUN] Menginisiasi pencarian data...`, 15);
+                await typeLine(`[$ TARGET] Kueri: ${input} (${searchType.toUpperCase()})`, 15);
 
-            await generateFakeResult(input);
-        });
+                await generateFakeResult(input);
+            });
+        }
 
         // Premium Button Handler (USER INSTRUCTION)
-        premiumButton.addEventListener('click', () => {
+        if (premiumButton) {
+            premiumButton.addEventListener('click', () => {
 
-            // HTML content for payment instructions
-            const instructionsHtml = `
-            <h4 class="text-lg font-bold text-neon mb-4">Langkah-Langkah Konfirmasi Pembayaran</h4>
-            
-            <p class="text-sm mb-4 text-left">
-                1. Lakukan pembayaran **Rp 399.000** (+ Gratis 1 Bulan) melalui **QRIS** di bawah ini:
-            </p>
-            
-            <div class="flex justify-center mb-4 p-2 bg-white rounded-md">
-                <img src="qris.jpg" alt="QRIS Placeholder" class="w-48 h-48 border-2 border-green-500 rounded-md">
-            </div>
+                // HTML content for payment instructions
+                const instructionsHtml = `
+                <h4 class="text-lg font-bold text-neon mb-4">Langkah-Langkah Konfirmasi Pembayaran</h4>
+                
+                <p class="text-sm mb-4 text-left">
+                    1. Lakukan pembayaran **Rp 399.000** (+ Gratis 1 Bulan) melalui **QRIS** di bawah ini:
+                </p>
+                
+                <div class="flex justify-center mb-4 p-2 bg-white rounded-md">
+                    <img src="https://placehold.co/200x200/000000/ffffff?text=QRIS_SCAN" alt="QRIS Placeholder" class="w-48 h-48 border-2 border-green-500 rounded-md">
+                </div>
 
-            <p class="text-xs text-center text-gray-500 mb-4">
-                (Gunakan aplikasi pembayaran Anda yang mendukung QRIS. Pastikan jumlahnya tepat.)
-            </p>
+                <p class="text-xs text-center text-gray-500 mb-4">
+                    (Gunakan aplikasi pembayaran Anda yang mendukung QRIS. Pastikan jumlahnya tepat.)
+                </p>
 
-            <p class="text-sm mb-2 text-left text-yellow-500">
-                **LANGKAH KONFIRMASI WAJIB (Admin Verifikasi):**
-            </p>
-            <p class="text-sm mb-4 text-left">
-                2. Setelah transfer, kirimkan **bukti pembayaran** (screenshot) dan **USER ID Anda** (tertera di bawah) ke kontak Admin kami melalui Telegram: 
-                <a href="https://t.me/Youghoz" target="_blank" class="text-cyan-400 hover:text-cyan-200 font-bold">@Youghoz</a>
-            </p>
-            <p class="text-sm mb-2 text-left">
-                3. User ID Anda (WAJIB disertakan):
-            </p>
-            <div class="user-id-display text-left">
-                <span class="text-red-500 font-bold">${userId}</span>
-            </div>
-            <p class="text-xs mt-4 text-gray-500">
-                Status Premium akan aktif setelah **Admin memverifikasi** pembayaran dan User ID Anda. Proses Verifikasi Admin: 1-5 Menit.
-            </p>
-        `;
+                <p class="text-sm mb-2 text-left text-yellow-500">
+                    **LANGKAH KONFIRMASI WAJIB (Admin Verifikasi):**
+                </p>
+                <p class="text-sm mb-4 text-left">
+                    2. Setelah transfer, kirimkan **bukti pembayaran** (screenshot) dan **USER ID Anda** (tertera di bawah) ke kontak Admin kami melalui Telegram: 
+                    <a href="https://t.me/Youghoz" target="_blank" class="text-cyan-400 hover:text-cyan-200 font-bold">@Youghoz</a>
+                </p>
+                <p class="text-sm mb-2 text-left">
+                    3. User ID Anda (WAJIB disertakan):
+                </p>
+                <div class="user-id-display text-left">
+                    <span class="text-red-500 font-bold">${userId}</span>
+                </div>
+                <p class="text-xs mt-4 text-gray-500">
+                    Status Premium akan aktif setelah **Admin memverifikasi** pembayaran dan User ID Anda. Proses Verifikasi Admin: 1-5 Menit.
+                </p>
+                `;
 
-            showMessageBox(
-                "[[ ALPHA-7 PAYMENT VIA QRIS & TELEGRAM ]]",
-                instructionsHtml,
-                false
-            );
-        });
+                showMessageBox(
+                    "[[ ALPHA-7 PAYMENT VIA QRIS & TELEGRAM ]]",
+                    instructionsHtml,
+                    false
+                );
+            });
+        }
 
         // Admin Panel Logic (ADMIN ACTION)
-        document.getElementById('activatePremiumButton').addEventListener('click', async () => {
-            const targetUid = document.getElementById('targetUserIdInput').value.trim();
-            const adminStatus = document.getElementById('adminStatus');
-            adminStatus.classList.remove('hidden');
-            adminStatus.textContent = 'Status: Memproses aktivasi Premium...';
+        const activatePremiumButton = document.getElementById('activatePremiumButton');
+        if (activatePremiumButton) {
+            activatePremiumButton.addEventListener('click', async () => {
+                const targetUidInput = document.getElementById('targetUserIdInput');
+                const targetUid = targetUidInput ? targetUidInput.value.trim() : '';
+                const adminStatus = document.getElementById('adminStatus');
+                
+                if (!adminStatus) return;
+                
+                adminStatus.classList.remove('hidden');
+                adminStatus.textContent = 'Status: Memproses aktivasi Premium...';
 
-            if (!targetUid) {
-                adminStatus.textContent = '[$ ERROR] Target User ID tidak boleh kosong. Masukkan ID dari Telegram.';
-                adminStatus.classList.remove('text-yellow-400');
-                adminStatus.classList.add('text-red-500');
-                return;
-            }
+                if (!targetUid) {
+                    adminStatus.textContent = '[$ ERROR] Target User ID tidak boleh kosong. Masukkan ID dari Telegram.';
+                    adminStatus.classList.remove('text-yellow-400');
+                    adminStatus.classList.add('text-red-500');
+                    return;
+                }
 
-            // Safety check agar tidak mengaktifkan admin ID itu sendiri
-            if (targetUid === ADMIN_USER_ID) {
-                adminStatus.textContent = '[$ ERROR] User ID Admin tidak perlu diaktifkan.';
-                adminStatus.classList.remove('text-yellow-400');
-                adminStatus.classList.add('text-red-500');
-                return;
-            }
+                // Safety check agar tidak mengaktifkan admin ID itu sendiri
+                if (targetUid === ADMIN_USER_ID) {
+                    adminStatus.textContent = '[$ ERROR] User ID Admin tidak perlu diaktifkan.';
+                    adminStatus.classList.remove('text-yellow-400');
+                    adminStatus.classList.add('text-red-500');
+                    return;
+                }
 
-            try {
-                // Write premium status to Firestore
-                await setDoc(getPremiumStatusPath(targetUid), {
-                    isPremium: true,
-                    activatedBy: userId, // Log which admin activated it
-                    activationDate: new Date().toISOString()
-                }, { merge: true });
+                try {
+                    // Write premium status to Firestore
+                    await setDoc(getPremiumStatusPath(targetUid), {
+                        isPremium: true,
+                        activatedBy: userId, // Log which admin activated it
+                        activationDate: new Date().toISOString()
+                    }, { merge: true });
 
-                adminStatus.textContent = `[$ SUCCESS] User ID ${targetUid.substring(0, 10)}... telah diaktifkan! Status Premium diperbarui. Konfirmasi Selesai.`;
-                adminStatus.classList.add('text-green-500');
-                adminStatus.classList.remove('text-red-500', 'text-yellow-400');
+                    adminStatus.textContent = `[$ SUCCESS] User ID ${targetUid.substring(0, 10)}... telah diaktifkan! Status Premium diperbarui. Konfirmasi Selesai.`;
+                    adminStatus.classList.add('text-green-500');
+                    adminStatus.classList.remove('text-red-500', 'text-yellow-400');
 
-            } catch (error) {
-                console.error("ADMIN ERROR activating premium:", error);
-                adminStatus.textContent = `[$ FATAL ERROR] Gagal menyimpan ke database. Cek konsol.`;
-                adminStatus.classList.remove('text-yellow-400', 'text-green-500');
-                adminStatus.classList.add('text-red-500');
-            }
-        });
+                } catch (error) {
+                    console.error("ADMIN ERROR activating premium:", error);
+                    adminStatus.textContent = `[$ FATAL ERROR] Gagal menyimpan ke database. Cek konsol.`;
+                    adminStatus.classList.remove('text-yellow-400', 'text-green-500');
+                    adminStatus.classList.add('text-red-500');
+                }
+            });
+        }
+
 
         // Jalankan script setelah DOM siap sepenuhnya
+        // INI ADALAH BAGIAN KRUSIAL UNTUK MEMPERBAIKI TypeError
         window.addEventListener('DOMContentLoaded', () => {
-          initFirebase();
-        
-          // Tone.js fix (agar bisa dipicu lewat interaksi)
-          document.body.addEventListener('click', () => {
-            if (Tone && Tone.context.state !== 'running') {
-              Tone.start();
-            }
-          }, { once: true });
-        
-          // Setup awal sound toggle
-          const soundToggle = document.getElementById('soundToggle');
-          const soundIndicator = document.querySelector('.toggle-circle');
-        
-          if (soundToggle && soundIndicator) {
-            let isSoundOn = soundToggle.checked;
-            if (isSoundOn) {
-              soundIndicator.classList.add('translate-x-3');
-              document.getElementById('soundIndicator').classList.add('bg-green-500');
+            initFirebase();
+            
+            // Tone.js fix (agar bisa dipicu lewat interaksi)
+            document.body.addEventListener('click', () => {
+              if (typeof Tone !== 'undefined' && Tone.context.state !== 'running') {
+                Tone.start();
+              }
+            }, { once: true });
+            
+            // --- Setup awal sound toggle (FIXED CRASH HERE) ---
+            const soundToggle = document.getElementById('soundToggle');
+            const soundIndicator = document.querySelector('.toggle-circle');
+            const indicatorWrapper = document.getElementById('soundIndicator'); // Mengacu ke div wrapper
+            
+            if (soundToggle && soundIndicator && indicatorWrapper) {
+                
+                // Sinkronkan state checkbox dengan isSoundOn (yang dibaca dari localStorage)
+                soundToggle.checked = isSoundOn;
+                
+                // Terapkan UI awal
+                if (isSoundOn) {
+                    soundIndicator.classList.add('translate-x-3');
+                    indicatorWrapper.classList.add('bg-green-500');
+                    indicatorWrapper.classList.remove('bg-gray-500');
+                } else {
+                    soundIndicator.classList.add('translate-x-0');
+                    indicatorWrapper.classList.add('bg-gray-500');
+                    indicatorWrapper.classList.remove('bg-green-500');
+                }
+                
+                // Tambahkan listener sekarang, setelah elemen DITEMUKAN
+                soundToggle.addEventListener('change', () => {
+                    isSoundOn = soundToggle.checked;
+                    localStorage.setItem('sound', isSoundOn ? 'true' : 'false'); // Persist state
+
+                    soundIndicator.classList.toggle('translate-x-3');
+                    soundIndicator.classList.toggle('translate-x-0');
+                    indicatorWrapper.classList.toggle('bg-green-500');
+                    indicatorWrapper.classList.toggle('bg-gray-500');
+
+                    if (isSoundOn) {
+                        if (typeof Tone !== 'undefined' && Tone.context.state !== 'running') {
+                            Tone.start().then(() => playSystemSound());
+                        } else {
+                            playSystemSound();
+                        }
+                    }
+                });
             } else {
-              soundIndicator.classList.add('translate-x-0');
-              document.getElementById('soundIndicator').classList.add('bg-gray-500');
+              console.warn('Sound toggle elements not found in DOM. Sound feature disabled.');
             }
-          } else {
-            console.warn('Sound toggle or indicator not found in DOM.');
-          }
         });
