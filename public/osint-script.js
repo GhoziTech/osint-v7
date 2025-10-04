@@ -514,26 +514,6 @@
             }
         });
 
-        // --- Initialization on Load ---
-        window.onload = () => {
-            initFirebase();
-
-            // Mengganti listener ini untuk mengatasi masalah Tone.js di sebagian besar browser
-            document.body.addEventListener('click', () => {
-                if (Tone && Tone.context.state !== 'running') {
-                    Tone.start();
-                }
-            }, { once: true });
-
-            // Initial setup for the sound toggle indicator
-            if (isSoundOn) {
-                soundIndicator.classList.add('translate-x-3');
-                document.getElementById('soundIndicator').classList.add('bg-green-500');
-            } else {
-                soundIndicator.classList.add('translate-x-0');
-                document.getElementById('soundIndicator').classList.add('bg-gray-500');
-            }
-        }
         // Jalankan script setelah DOM siap sepenuhnya
         window.addEventListener('DOMContentLoaded', () => {
           initFirebase();
