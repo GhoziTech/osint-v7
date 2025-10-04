@@ -6,6 +6,7 @@ import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/f
 // Mengambil Environment Variable dari Next.js (via globalThis / window)
 const firebaseConfig = (() => {
     try {
+        // Menggunakan window.FIREBASE_CONFIG_JSON yang disuntikkan di pages/index.js
         const env = window.FIREBASE_CONFIG_JSON || globalThis.FIREBASE_CONFIG_JSON;
         return JSON.parse(env);
     } catch (e) {
@@ -54,7 +55,7 @@ function playSound(frequency = "C4") {
     try {
         // Cek dan start context jika belum berjalan
         if (Tone.context.state !== 'running') {
-            Tone.start().catch(e => console.error("Gagal start Tone.js:", e));
+            // Jika belum berjalan, akan dicoba start saat klik pertama (di window.onload)
             return;
         }
         const synth = new Tone.Synth().toDestination();
@@ -76,7 +77,7 @@ async function initFirebase() {
 
         await setPersistence(auth, browserSessionPersistence);
         
-        // Autentikasi
+        // Autentikasi menggunakan token kustom atau anonim
         if (initialAuthToken) {
             await signInWithCustomToken(auth, initialAuthToken);
             console.log("[$ SUCCESS] Autentikasi kustom berhasil.");
@@ -100,7 +101,7 @@ async function initFirebase() {
 
     } catch (error) {
         console.error("[$ FATAL ERROR] Kesalahan inisialisasi Firebase:", error);
-        document.getElementById('root').innerHTML = `<div class="p-8 text-center text-red-600 bg-red-100 rounded-lg">Gagal inisialisasi Firebase. Cek konsol untuk detail error.</div>`;
+        document.getElementById('root').innerHTML = `<div class="p-8 text-center text-red-600 bg-red-950 border border-red-500 text-sm">Gagal inisialisasi Firebase. Cek konsol untuk detail error.</div>`;
     }
 }
 
@@ -121,17 +122,22 @@ function setupPremiumListener(uid) {
         const adminPanel = document.getElementById('adminPanel');
         
         if (docSnap.exists() && docSnap.data().isPremium === true) {
+            const wasPremium = isPremium;
             isPremium = true;
             premiumStatusElement.textContent = 'STATUS: PREMIUM AKTIF';
-            premiumStatusElement.classList.add('text-green-500');
-            premiumStatusElement.classList.remove('text-yellow-500');
-            playSound("G4");
+            premiumStatusElement.classList.add('text-green-400', 'shadow-neon-sm'); // Gunakan hijau neon
+            premiumStatusElement.classList.remove('text-yellow-400');
+            
+            if (!wasPremium) {
+                playSound("G4"); // Suara jika baru saja menjadi premium
+            }
+
             console.log("[$ INFO] Status Premium Aktif.");
         } else {
             isPremium = false;
-            premiumStatusElement.textContent = 'STATUS: Non-Premium';
-            premiumStatusElement.classList.remove('text-green-500');
-            premiumStatusElement.classList.add('text-yellow-500');
+            premiumStatusElement.textContent = 'STATUS: Non-Premium (Akses Terbatas)';
+            premiumStatusElement.classList.remove('text-green-400', 'shadow-neon-sm');
+            premiumStatusElement.classList.add('text-yellow-400');
             console.log("[$ INFO] Status Non-Premium.");
         }
 
@@ -145,10 +151,10 @@ function setupPremiumListener(uid) {
 }
 
 
-// --- UI Rendering and Event Handlers (Fix for Blank Screen) ---
+// --- UI Rendering and Event Handlers ---
 
 /**
- * Membangun dan merender seluruh antarmuka aplikasi.
+ * Membangun dan merender seluruh antarmuka aplikasi dengan tema terminal.
  */
 function renderUI() {
     const root = document.getElementById('root');
@@ -157,62 +163,64 @@ function renderUI() {
     // Bersihkan root sebelum render
     root.innerHTML = '';
     
-    // Pastikan adminPanel logic hanya dipasang setelah elemen ada
     const isAdmin = userId === ADMIN_UID;
     
+    // Menggunakan gaya terminal: Latar belakang hitam, border hijau neon.
     const uiContent = htmlToElement(`
-        <div id="appContainer" class="min-h-screen bg-gray-50 flex flex-col items-center justify-center p-4">
+        <div id="appContainer" class="min-h-screen flex flex-col items-center justify-center p-4">
             
-            <!-- Main Card -->
-            <div class="w-full max-w-2xl bg-white shadow-xl rounded-xl p-6 md:p-10 space-y-6">
+            <!-- Main Terminal Window -->
+            <div class="w-full max-w-3xl bg-black border-4 border-green-500 shadow-neon-lg p-6 md:p-10 space-y-6">
                 
-                <h1 class="text-3xl font-extrabold text-gray-800 text-center border-b pb-4">
-                    Sistem Pemrosesan Data OSINT V7
+                <h1 class="text-3xl font-extrabold text-green-400 text-center border-b border-green-700 pb-4 tracking-wider">
+                    $ OSINT SYSTEM V7.0
                 </h1>
 
-                <!-- User & Status Section -->
-                <div class="flex flex-col md:flex-row justify-between items-start md:items-center p-4 bg-blue-50 rounded-lg shadow-sm">
+                <!-- User & Status Section (Baris Command) -->
+                <div class="flex flex-col md:flex-row justify-between items-start md:items-center p-4 bg-gray-900 border border-green-800 rounded-sm shadow-inner">
                     <div class="space-y-1">
-                        <p id="currentUserId" class="text-sm font-mono text-gray-700 break-all">
+                        <p id="currentUserId" class="text-sm font-mono text-green-300 break-all">
                             UID: ${userId}
                         </p>
-                        <p id="premiumStatus" class="text-lg font-bold ${isPremium ? 'text-green-500' : 'text-yellow-500'}">
-                            STATUS: ${isPremium ? 'PREMIUM AKTIF' : 'Non-Premium'}
+                        <p id="premiumStatus" class="text-lg font-bold ${isPremium ? 'text-green-400 shadow-neon-sm' : 'text-yellow-400'}">
+                            STATUS: ${isPremium ? 'PREMIUM AKTIF' : 'Non-Premium (Akses Terbatas)'}
                         </p>
                     </div>
 
                     <!-- Sound Toggle -->
                     <div class="mt-4 md:mt-0 flex items-center space-x-2">
-                        <span class="text-sm text-gray-600">Sound FX</span>
-                        <button id="soundToggle" class="relative inline-flex items-center h-6 w-11 rounded-full transition-colors focus:outline-none 
-                            ${isSoundOn ? 'bg-green-500' : 'bg-gray-400'}" role="switch" aria-checked="${isSoundOn}">
-                            <span id="soundIndicator" class="inline-block w-4 h-4 transform rounded-full bg-white shadow-lg transition-transform 
+                        <span class="text-sm text-green-500">Audio FX</span>
+                        <button id="soundToggle" class="relative inline-flex items-center h-6 w-11 transition-colors focus:outline-none 
+                            ${isSoundOn ? 'bg-green-500 shadow-neon-sm' : 'bg-gray-700'}" style="border-radius: 2px;" role="switch" aria-checked="${isSoundOn}">
+                            <span id="soundIndicator" class="inline-block w-4 h-4 transform rounded-none bg-green-100 shadow-md transition-transform 
                                 ${isSoundOn ? 'translate-x-6' : 'translate-x-1'}"></span>
                         </button>
                     </div>
                 </div>
 
-                <!-- Main Content Placeholder -->
-                <div id="mainContent" class="text-center p-6 border border-dashed rounded-lg text-gray-500">
-                    <p class="mb-2">Aplikasi utama berjalan di sini.</p>
-                    <p>Status Premium: ${isPremium ? 'Akses penuh' : 'Akses terbatas'}</p>
+                <!-- Main Content (Area Output Terminal) -->
+                <div id="mainContent" class="p-6 border-2 border-green-600 bg-gray-950 min-h-[250px] overflow-auto shadow-inner">
+                    <pre class="text-green-300 whitespace-pre-wrap">$ system_init_check...</pre>
+                    <pre class="text-green-300 whitespace-pre-wrap">$ auth_status: ${userId}</pre>
+                    <pre class="text-yellow-400 whitespace-pre-wrap">$ premium_status: ${isPremium ? 'ACCESS_GRANTED' : 'RESTRICTED_MODE'}</pre>
+                    <pre class="text-green-200 whitespace-pre-wrap mt-4">> Siap menerima command OSINT...</pre>
                     <!-- Logika dan hasil OSINT akan ditampilkan di area ini -->
                 </div>
 
                 <!-- Admin Panel (Hanya ditampilkan untuk ADMIN_UID) -->
-                <div id="adminPanel" style="display: ${isAdmin ? 'block' : 'none'};" class="bg-red-50 border border-red-200 p-6 rounded-lg space-y-4">
-                    <h2 class="text-xl font-bold text-red-600 border-b pb-2">ADMIN PANEL: Aktivasi Premium</h2>
+                <div id="adminPanel" style="display: ${isAdmin ? 'block' : 'none'};" class="bg-red-950 border-2 border-red-500 p-6 space-y-4 shadow-neon-lg">
+                    <h2 class="text-xl font-bold text-red-400 border-b border-red-700 pb-2">ADMIN PANEL: Aktivasi Premium</h2>
                     <input id="targetUidInput" type="text" placeholder="Masukkan UID Target untuk Aktivasi Premium" 
-                           class="w-full p-3 border border-gray-300 rounded-md focus:ring-red-500 focus:border-red-500">
-                    <button id="activatePremiumBtn" class="w-full bg-red-600 hover:bg-red-700 text-white font-semibold py-3 rounded-md transition duration-150">
-                        Aktifkan Premium
+                           class="w-full p-3 border-2 border-red-500 bg-black text-green-400 focus:ring-red-500 focus:border-red-500 rounded-none">
+                    <button id="activatePremiumBtn" class="w-full bg-red-800 hover:bg-red-700 text-white font-semibold py-3 transition duration-150 rounded-none border border-red-500 hover:shadow-neon-sm">
+                        [ EXECUTE ] Aktifkan Premium
                     </button>
                     <p id="adminStatus" class="text-sm text-center text-yellow-400 font-medium">[ $ INFO ] Siap.</p>
                 </div>
 
             </div>
             
-            <p class="mt-4 text-xs text-gray-500">Powered by Next.js & Firebase Firestore</p>
+            <p class="mt-4 text-xs text-green-500">[ End of Session ]</p>
         </div>
     `);
 
@@ -239,15 +247,15 @@ function setupEventListeners() {
             if (isSoundOn) {
                 soundIndicator.classList.add('translate-x-6');
                 soundIndicator.classList.remove('translate-x-1');
-                soundToggle.classList.add('bg-green-500');
-                soundToggle.classList.remove('bg-gray-400');
+                soundToggle.classList.add('bg-green-500', 'shadow-neon-sm');
+                soundToggle.classList.remove('bg-gray-700');
                 soundToggle.setAttribute('aria-checked', 'true');
                 playSound("C5"); // Test sound
             } else {
                 soundIndicator.classList.remove('translate-x-6');
                 soundIndicator.classList.add('translate-x-1');
-                soundToggle.classList.remove('bg-green-500');
-                soundToggle.classList.add('bg-gray-400');
+                soundToggle.classList.remove('bg-green-500', 'shadow-neon-sm');
+                soundToggle.classList.add('bg-gray-700');
                 soundToggle.setAttribute('aria-checked', 'false');
             }
         };
@@ -325,6 +333,5 @@ window.onload = () => {
     }, { once: true });
     
     // 3. Render UI awal (sebelum setupFirebase selesai, untuk menghindari layar kosong)
-    // Setelah Firebase selesai, renderUI akan dipanggil lagi di onAuthStateChanged.
-    renderUI(); 
+    // renderUI(); // Dihapus karena sudah dipanggil di initFirebase saat auth state berubah
 }
